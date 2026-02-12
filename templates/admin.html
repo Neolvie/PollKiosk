@@ -125,6 +125,7 @@
         }
         .btn-secondary:hover { background: var(--border); }
         .btn-warning { background: var(--warning); color: #000; }
+        .btn-warning:hover { background: #D97706; }
         .btn-sm { padding: 0.4rem 0.9rem; font-size: 0.85rem; }
         .btn-xs { padding: 0.3rem 0.7rem; font-size: 0.78rem; }
         .btn:disabled { opacity: 0.5; cursor: not-allowed; transform: none !important; }
@@ -248,6 +249,20 @@
         .answer-row { display: flex; gap: 0.4rem; align-items: center; }
         .answer-row .form-input { flex: 1; }
 
+        /* Checkbox toggle */
+        .toggle-row {
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+            padding: 0.6rem 0;
+        }
+        .toggle-row input[type=checkbox] {
+            width: 18px; height: 18px;
+            cursor: pointer;
+            accent-color: var(--primary);
+        }
+        .toggle-label { font-size: 0.9rem; font-weight: 500; cursor: pointer; }
+
         /* Survey builder: poll selector */
         .poll-selector {
             border: 1px solid var(--border);
@@ -325,7 +340,6 @@
     <!-- Tabs -->
     <div class="tabs">
         <button class="tab-btn active" onclick="switchTab('surveys')">Опросы</button>
-        <button class="tab-btn" onclick="switchTab('questions')">Вопросы</button>
         <button class="tab-btn" onclick="switchTab('queue')">Очередь показа</button>
     </div>
 
@@ -337,19 +351,6 @@
                 <button class="btn btn-primary" onclick="showCreateSurveyModal()">+ Создать опрос</button>
             </div>
             <div id="surveysList" class="item-list">
-                <div class="no-data">Загрузка...</div>
-            </div>
-        </div>
-    </div>
-
-    <!-- ===== TAB: QUESTIONS ===== -->
-    <div id="tab-questions" class="tab-panel">
-        <div class="card">
-            <div class="card-header">
-                <h2 class="card-title">Банк вопросов</h2>
-                <button class="btn btn-primary" onclick="showCreatePollModal()">+ Добавить вопрос</button>
-            </div>
-            <div id="pollsList" class="item-list">
                 <div class="no-data">Загрузка...</div>
             </div>
         </div>
@@ -389,11 +390,39 @@
         </div>
 
         <div class="form-group">
+            <div class="toggle-row">
+                <input type="checkbox" id="surveyShowTitle" checked>
+                <label class="toggle-label" for="surveyShowTitle">Показывать название опроса посетителям киоска</label>
+            </div>
+        </div>
+
+        <div class="form-group">
             <label class="form-label">Вопросы в опросе <span style="color:var(--text-secondary)">(выберите и задайте порядок)</span></label>
             <div id="pollSelectorContainer" class="poll-selector">
                 <div class="no-data" style="padding:1rem">Загрузка вопросов...</div>
             </div>
             <div id="selectedPollsOrder" class="selected-polls-order"></div>
+        </div>
+
+        <div style="border-top:1px solid var(--border);margin-top:1.5rem;padding-top:1.25rem;">
+            <p style="font-size:0.85rem;color:var(--text-secondary);margin-bottom:0.75rem">Добавить новый вопрос прямо здесь:</p>
+            <button class="btn btn-secondary btn-sm" onclick="showInlineNewQuestion()">+ Новый вопрос</button>
+            <div id="inlineNewQuestion" style="display:none;margin-top:1rem;">
+                <div class="form-group">
+                    <label class="form-label">Текст вопроса</label>
+                    <textarea class="form-input" id="inlinePollQuestion" placeholder="Введите вопрос..." style="min-height:70px"></textarea>
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Варианты ответов</label>
+                    <div class="answers-input" id="inlinePollAnswers">
+                        <div class="answer-row"><input type="text" class="form-input" placeholder="Вариант 1"><button type="button" class="btn btn-secondary btn-xs" onclick="removeInlineAnswerRow(this)">✕</button></div>
+                        <div class="answer-row"><input type="text" class="form-input" placeholder="Вариант 2"><button type="button" class="btn btn-secondary btn-xs" onclick="removeInlineAnswerRow(this)">✕</button></div>
+                    </div>
+                    <button type="button" class="btn btn-secondary btn-sm" onclick="addInlineAnswerRow()" style="margin-top:0.5rem">+ Вариант</button>
+                </div>
+                <button class="btn btn-success btn-sm" onclick="saveInlinePoll()">Создать вопрос</button>
+                <button class="btn btn-secondary btn-sm" onclick="hideInlineNewQuestion()">Отмена</button>
+            </div>
         </div>
 
         <div class="modal-footer">
@@ -403,25 +432,23 @@
     </div>
 </div>
 
-<!-- Create Poll (Question) Modal -->
-<div id="pollModal" class="modal">
+<!-- Edit Question (Poll) Modal -->
+<div id="editPollModal" class="modal">
     <div class="modal-box">
-        <h3 class="modal-title">Добавить вопрос</h3>
+        <h3 class="modal-title">Редактировать вопрос</h3>
+        <input type="hidden" id="editPollId" value="">
         <div class="form-group">
             <label class="form-label">Текст вопроса</label>
-            <textarea class="form-input" id="pollQuestionInput" placeholder="Введите вопрос..."></textarea>
+            <textarea class="form-input" id="editPollQuestion" placeholder="Введите вопрос..."></textarea>
         </div>
         <div class="form-group">
             <label class="form-label">Варианты ответов</label>
-            <div class="answers-input" id="pollAnswersInput">
-                <div class="answer-row"><input type="text" class="form-input" placeholder="Вариант 1"><button type="button" class="btn btn-secondary btn-xs" onclick="removeAnswerRow(this)">✕</button></div>
-                <div class="answer-row"><input type="text" class="form-input" placeholder="Вариант 2"><button type="button" class="btn btn-secondary btn-xs" onclick="removeAnswerRow(this)">✕</button></div>
-            </div>
-            <button type="button" class="btn btn-secondary btn-sm" onclick="addAnswerRow()" style="margin-top:0.5rem">+ Добавить вариант</button>
+            <div class="answers-input" id="editPollAnswers"></div>
+            <button type="button" class="btn btn-secondary btn-sm" onclick="addEditAnswerRow()" style="margin-top:0.5rem">+ Добавить вариант</button>
         </div>
         <div class="modal-footer">
-            <button class="btn btn-secondary" onclick="closePollModal()">Отмена</button>
-            <button class="btn btn-primary" onclick="savePoll()">Сохранить</button>
+            <button class="btn btn-secondary" onclick="closeEditPollModal()">Отмена</button>
+            <button class="btn btn-primary" onclick="saveEditPoll()">Сохранить</button>
         </div>
     </div>
 </div>
@@ -442,7 +469,10 @@
 <!-- Stats Modal -->
 <div id="statsModal" class="modal">
     <div class="modal-box" style="max-width:800px">
-        <h3 class="modal-title" id="statsModalTitle">Статистика</h3>
+        <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:1.5rem;gap:1rem;flex-wrap:wrap;">
+            <h3 class="modal-title" id="statsModalTitle" style="margin-bottom:0">Статистика</h3>
+            <button class="btn btn-warning btn-sm" id="exportExcelBtn" onclick="exportExcel()">⬇ Скачать Excel</button>
+        </div>
         <div id="statsContent"><div class="no-data">Загрузка...</div></div>
         <div class="modal-footer">
             <button class="btn btn-secondary" onclick="closeStatsModal()">Закрыть</button>
@@ -461,6 +491,9 @@ let activeIds  = [];   // ordered active survey IDs
 // For survey builder: ordered list of selected poll IDs
 let selectedPollIds = [];
 
+// Current survey ID shown in stats modal
+let currentStatsSurveyId = null;
+
 // ========================================================
 // Tab switching
 // ========================================================
@@ -470,7 +503,6 @@ function switchTab(name) {
     document.getElementById('tab-' + name).classList.add('active');
     document.querySelector(`.tab-btn[onclick="switchTab('${name}')"]`).classList.add('active');
     if (name === 'surveys') loadSurveys();
-    if (name === 'questions') loadPolls();
     if (name === 'queue') loadQueue();
 }
 
@@ -486,17 +518,6 @@ async function loadSurveys() {
         renderSurveysList();
     } catch (e) {
         document.getElementById('surveysList').innerHTML = '<div class="no-data">Ошибка загрузки</div>';
-    }
-}
-
-async function loadPolls() {
-    try {
-        const r = await fetch('/api/admin/polls');
-        const d = await r.json();
-        allPolls = d.polls;
-        renderPollsList();
-    } catch (e) {
-        document.getElementById('pollsList').innerHTML = '<div class="no-data">Ошибка загрузки</div>';
     }
 }
 
@@ -523,11 +544,12 @@ function renderSurveysList() {
     el.innerHTML = allSurveys.map(s => {
         const isActive = activeSet.has(s.id);
         const order = activeIds.indexOf(s.id) + 1;
+        const titleVis = s.show_title === false ? ' <span style="color:var(--text-secondary);font-size:0.78rem">(заголовок скрыт)</span>' : '';
         return `
         <div class="list-item ${isActive ? 'active-item' : ''}">
             <div class="item-info">
                 <div class="item-title">
-                    ${s.title}
+                    ${s.title}${titleVis}
                     ${isActive ? `<span class="badge badge-active">Активен</span><span class="badge badge-order">#${order}</span>` : ''}
                 </div>
                 <div class="item-meta">Вопросов: ${s.poll_count} • Создан: ${fmtDate(s.created_at)}</div>
@@ -542,34 +564,12 @@ function renderSurveysList() {
 }
 
 // ========================================================
-// RENDER — Questions (polls) tab
-// ========================================================
-function renderPollsList() {
-    const el = document.getElementById('pollsList');
-    if (allPolls.length === 0) {
-        el.innerHTML = '<div class="no-data">Нет вопросов. Создайте первый!</div>';
-        return;
-    }
-    el.innerHTML = allPolls.map(p => `
-        <div class="list-item">
-            <div class="item-info">
-                <div class="item-title">${p.question}</div>
-                <div class="item-meta">Вариантов: ${p.answers.length} • Создан: ${fmtDate(p.created_at)}</div>
-            </div>
-            <div class="item-actions">
-                <button class="btn btn-primary btn-sm" onclick="showPollStats(${p.id})">Статистика</button>
-                <button class="btn btn-danger btn-sm" onclick="deletePoll(${p.id})">Удалить</button>
-            </div>
-        </div>`).join('');
-}
-
-// ========================================================
 // RENDER — Queue tab
 // ========================================================
 function renderQueue() {
     const el = document.getElementById('activeQueueContainer');
     if (activeIds.length === 0) {
-        el.innerHTML = '<div class="queue-empty">Нет активных опросов. Добавьте опросы из вкладки «Опросы» или нажмите «+».</div>';
+        el.innerHTML = '<div class="queue-empty">Нет активных опросов. Нажмите «+ Добавить в очередь».</div>';
         return;
     }
     const surveyMap = Object.fromEntries(allSurveys.map(s => [s.id, s]));
@@ -676,9 +676,11 @@ async function showCreateSurveyModal() {
     document.getElementById('surveyModalTitle').textContent = 'Создать опрос';
     document.getElementById('surveyEditId').value = '';
     document.getElementById('surveyTitleInput').value = '';
+    document.getElementById('surveyShowTitle').checked = true;
     selectedPollIds = [];
     renderPollSelector();
     renderSelectedOrder();
+    hideInlineNewQuestion();
     document.getElementById('surveyModal').classList.add('show');
 }
 
@@ -689,32 +691,34 @@ async function editSurvey(surveyId) {
     document.getElementById('surveyModalTitle').textContent = 'Изменить опрос';
     document.getElementById('surveyEditId').value = surveyId;
     document.getElementById('surveyTitleInput').value = s.title;
+    document.getElementById('surveyShowTitle').checked = s.show_title !== false;
     selectedPollIds = s.polls.map(p => p.id);
     renderPollSelector();
     renderSelectedOrder();
+    hideInlineNewQuestion();
     document.getElementById('surveyModal').classList.add('show');
 }
 
 async function loadPollsIfNeeded() {
-    if (allPolls.length === 0) {
-        const r = await fetch('/api/admin/polls');
-        const d = await r.json();
-        allPolls = d.polls;
-    }
+    const r = await fetch('/api/admin/polls');
+    const d = await r.json();
+    allPolls = d.polls;
 }
 
 function renderPollSelector() {
     const el = document.getElementById('pollSelectorContainer');
     if (allPolls.length === 0) {
-        el.innerHTML = '<div class="no-data" style="padding:1rem">Нет вопросов. Сначала создайте вопросы во вкладке «Вопросы».</div>';
+        el.innerHTML = '<div class="no-data" style="padding:1rem">Нет вопросов. Создайте вопрос ниже.</div>';
         return;
     }
     el.innerHTML = allPolls.map(p => {
         const checked = selectedPollIds.includes(p.id) ? 'checked' : '';
+        const q = p.question.length > 80 ? p.question.slice(0, 80) + '…' : p.question;
         return `
         <label class="poll-option">
             <input type="checkbox" value="${p.id}" ${checked} onchange="togglePollSelection(${p.id}, this.checked)">
-            <span class="poll-option-text">${p.question}</span>
+            <span class="poll-option-text">${q}</span>
+            <button type="button" class="btn btn-secondary btn-xs" onclick="openEditPollModal(${p.id}, event)" title="Редактировать">✎</button>
         </label>`;
     }).join('');
 }
@@ -763,10 +767,10 @@ function moveSurveyPoll(idx, dir) {
 async function saveSurvey() {
     const title = document.getElementById('surveyTitleInput').value.trim();
     if (!title) { alert('Введите название опроса'); return; }
-    if (selectedPollIds.length === 0) { alert('Выберите хотя бы один вопрос'); return; }
 
     const editId = document.getElementById('surveyEditId').value;
-    const body = {title, poll_ids: selectedPollIds};
+    const showTitle = document.getElementById('surveyShowTitle').checked;
+    const body = {title, poll_ids: selectedPollIds, show_title: showTitle};
 
     try {
         if (editId) {
@@ -800,72 +804,135 @@ function closeSurveyModal() {
 }
 
 // ========================================================
-// CREATE POLL (QUESTION) MODAL
+// INLINE NEW QUESTION (inside survey modal)
 // ========================================================
-function showCreatePollModal() {
-    document.getElementById('pollQuestionInput').value = '';
-    document.getElementById('pollAnswersInput').innerHTML = `
-        <div class="answer-row"><input type="text" class="form-input" placeholder="Вариант 1"><button type="button" class="btn btn-secondary btn-xs" onclick="removeAnswerRow(this)">✕</button></div>
-        <div class="answer-row"><input type="text" class="form-input" placeholder="Вариант 2"><button type="button" class="btn btn-secondary btn-xs" onclick="removeAnswerRow(this)">✕</button></div>
+function showInlineNewQuestion() {
+    document.getElementById('inlineNewQuestion').style.display = 'block';
+    document.getElementById('inlinePollQuestion').value = '';
+    document.getElementById('inlinePollAnswers').innerHTML = `
+        <div class="answer-row"><input type="text" class="form-input" placeholder="Вариант 1"><button type="button" class="btn btn-secondary btn-xs" onclick="removeInlineAnswerRow(this)">✕</button></div>
+        <div class="answer-row"><input type="text" class="form-input" placeholder="Вариант 2"><button type="button" class="btn btn-secondary btn-xs" onclick="removeInlineAnswerRow(this)">✕</button></div>
     `;
-    document.getElementById('pollModal').classList.add('show');
 }
 
-function addAnswerRow() {
-    const cont = document.getElementById('pollAnswersInput');
+function hideInlineNewQuestion() {
+    document.getElementById('inlineNewQuestion').style.display = 'none';
+}
+
+function addInlineAnswerRow() {
+    const cont = document.getElementById('inlinePollAnswers');
     const row = document.createElement('div');
     row.className = 'answer-row';
-    row.innerHTML = `<input type="text" class="form-input" placeholder="Вариант ${cont.children.length + 1}"><button type="button" class="btn btn-secondary btn-xs" onclick="removeAnswerRow(this)">✕</button>`;
+    row.innerHTML = `<input type="text" class="form-input" placeholder="Вариант ${cont.children.length + 1}"><button type="button" class="btn btn-secondary btn-xs" onclick="removeInlineAnswerRow(this)">✕</button>`;
     cont.appendChild(row);
 }
 
-function removeAnswerRow(btn) {
-    const cont = document.getElementById('pollAnswersInput');
+function removeInlineAnswerRow(btn) {
+    const cont = document.getElementById('inlinePollAnswers');
     if (cont.children.length <= 2) { alert('Минимум 2 варианта ответа'); return; }
     btn.parentElement.remove();
 }
 
-async function savePoll() {
-    const question = document.getElementById('pollQuestionInput').value.trim();
-    const answers = Array.from(document.querySelectorAll('#pollAnswersInput input'))
+async function saveInlinePoll() {
+    const question = document.getElementById('inlinePollQuestion').value.trim();
+    const answers = Array.from(document.querySelectorAll('#inlinePollAnswers input'))
         .map(i => i.value.trim()).filter(Boolean);
 
     if (!question) { alert('Введите текст вопроса'); return; }
     if (answers.length < 2) { alert('Нужно минимум 2 варианта ответа'); return; }
 
     try {
-        await fetch('/api/admin/polls', {
+        const r = await fetch('/api/admin/polls', {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
             body: JSON.stringify({question, answers})
         });
-        closePollModal();
-        loadPolls();
-        allPolls = []; // invalidate cache
+        const d = await r.json();
+        if (d.poll_id) {
+            // Reload polls and auto-select the new one
+            const pr = await fetch('/api/admin/polls');
+            const pd = await pr.json();
+            allPolls = pd.polls;
+            selectedPollIds.push(d.poll_id);
+            renderPollSelector();
+            renderSelectedOrder();
+            hideInlineNewQuestion();
+        }
     } catch (e) {
         alert('Ошибка создания вопроса');
     }
 }
 
-async function deletePoll(pollId) {
-    if (!confirm('Удалить вопрос? Он будет удалён из всех опросов.')) return;
+// ========================================================
+// EDIT POLL (QUESTION) MODAL
+// ========================================================
+function openEditPollModal(pollId, event) {
+    event.preventDefault();
+    event.stopPropagation();
+    const poll = allPolls.find(p => p.id === pollId);
+    if (!poll) return;
+
+    document.getElementById('editPollId').value = pollId;
+    document.getElementById('editPollQuestion').value = poll.question;
+
+    const cont = document.getElementById('editPollAnswers');
+    cont.innerHTML = poll.answers.map((a, i) =>
+        `<div class="answer-row"><input type="text" class="form-input" value="${escHtml(a)}" placeholder="Вариант ${i+1}"><button type="button" class="btn btn-secondary btn-xs" onclick="removeEditAnswerRow(this)">✕</button></div>`
+    ).join('');
+
+    document.getElementById('editPollModal').classList.add('show');
+}
+
+function addEditAnswerRow() {
+    const cont = document.getElementById('editPollAnswers');
+    const row = document.createElement('div');
+    row.className = 'answer-row';
+    row.innerHTML = `<input type="text" class="form-input" placeholder="Вариант ${cont.children.length + 1}"><button type="button" class="btn btn-secondary btn-xs" onclick="removeEditAnswerRow(this)">✕</button>`;
+    cont.appendChild(row);
+}
+
+function removeEditAnswerRow(btn) {
+    const cont = document.getElementById('editPollAnswers');
+    if (cont.children.length <= 2) { alert('Минимум 2 варианта ответа'); return; }
+    btn.parentElement.remove();
+}
+
+async function saveEditPoll() {
+    const pollId = parseInt(document.getElementById('editPollId').value);
+    const question = document.getElementById('editPollQuestion').value.trim();
+    const answers = Array.from(document.querySelectorAll('#editPollAnswers input'))
+        .map(i => i.value.trim()).filter(Boolean);
+
+    if (!question) { alert('Введите текст вопроса'); return; }
+    if (answers.length < 2) { alert('Нужно минимум 2 варианта ответа'); return; }
+
     try {
-        await fetch(`/api/admin/polls/${pollId}`, {method: 'DELETE'});
-        loadPolls();
-        allPolls = [];
+        await fetch(`/api/admin/polls/${pollId}`, {
+            method: 'PUT',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({question, answers})
+        });
+        closeEditPollModal();
+        // Refresh polls list
+        const r = await fetch('/api/admin/polls');
+        const d = await r.json();
+        allPolls = d.polls;
+        renderPollSelector();
+        renderSelectedOrder();
     } catch (e) {
-        alert('Ошибка удаления');
+        alert('Ошибка сохранения вопроса');
     }
 }
 
-function closePollModal() {
-    document.getElementById('pollModal').classList.remove('show');
+function closeEditPollModal() {
+    document.getElementById('editPollModal').classList.remove('show');
 }
 
 // ========================================================
 // STATS
 // ========================================================
 async function showSurveyStats(surveyId) {
+    currentStatsSurveyId = surveyId;
     const survey = allSurveys.find(s => s.id === surveyId);
     document.getElementById('statsModalTitle').textContent = 'Статистика: ' + (survey ? survey.title : '');
     document.getElementById('statsContent').innerHTML = '<div class="no-data">Загрузка...</div>';
@@ -904,38 +971,14 @@ async function showSurveyStats(surveyId) {
     }
 }
 
-async function showPollStats(pollId) {
-    const poll = allPolls.find(p => p.id === pollId);
-    document.getElementById('statsModalTitle').textContent = poll ? poll.question : 'Статистика';
-    document.getElementById('statsContent').innerHTML = '<div class="no-data">Загрузка...</div>';
-    document.getElementById('statsModal').classList.add('show');
-
-    try {
-        const r = await fetch(`/api/admin/stats/${pollId}`);
-        const d = await r.json();
-        const total = d.stats.total_votes;
-        let html = `<div class="stats-grid">
-            <div class="stat-card"><div class="stat-value">${total}</div><div class="stat-label">Всего голосов</div></div>
-        </div>`;
-        d.poll.answers.forEach((ans, idx) => {
-            const cnt = d.stats.answer_counts[idx] || 0;
-            const pct = total > 0 ? ((cnt / total) * 100).toFixed(1) : 0;
-            html += `<div class="answer-stat">
-                <div class="answer-stat-header">
-                    <span class="answer-text">${ans}</span>
-                    <span class="answer-count">${cnt} (${pct}%)</span>
-                </div>
-                <div class="progress-bar"><div class="progress-fill" style="width:${pct}%"></div></div>
-            </div>`;
-        });
-        document.getElementById('statsContent').innerHTML = html;
-    } catch (e) {
-        document.getElementById('statsContent').innerHTML = '<div class="no-data">Ошибка загрузки</div>';
-    }
+function exportExcel() {
+    if (!currentStatsSurveyId) return;
+    window.location.href = `/api/admin/surveys/${currentStatsSurveyId}/export`;
 }
 
 function closeStatsModal() {
     document.getElementById('statsModal').classList.remove('show');
+    currentStatsSurveyId = null;
 }
 
 // ========================================================
@@ -943,6 +986,10 @@ function closeStatsModal() {
 // ========================================================
 function fmtDate(s) {
     try { return new Date(s).toLocaleString('ru-RU'); } catch { return s; }
+}
+
+function escHtml(s) {
+    return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 }
 
 // Close modal on backdrop click
