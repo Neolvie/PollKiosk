@@ -1,10 +1,13 @@
 # Poll Kiosk Backend - Flask Application
 # Supports surveys (multi-question), active survey queue, session tracking
 
-from flask import Flask, render_template, request, jsonify, make_response
+from flask import Flask, render_template, request, jsonify, make_response, send_file
 from functools import wraps
 import json
 import os
+import io
+import openpyxl
+from openpyxl.styles import Font, PatternFill, Alignment
 from database import Database
 
 app = Flask(__name__)
@@ -99,6 +102,7 @@ def session_config():
         clean.append({
             'id': s['id'],
             'title': s['title'],
+            'show_title': s.get('show_title', True),
             'polls': [
                 {'id': p['id'], 'question': p['question'], 'answers': p['answers']}
                 for p in s['polls']
@@ -164,6 +168,20 @@ def create_poll():
     return jsonify({'success': True, 'poll_id': poll_id})
 
 
+@app.route('/api/admin/polls/<int:poll_id>', methods=['PUT'])
+@requires_auth
+def update_poll(poll_id):
+    data = request.get_json()
+    if not data or 'question' not in data or 'answers' not in data:
+        return jsonify({'error': 'Invalid request'}), 400
+    question = data['question'].strip()
+    answers = [a.strip() for a in data['answers'] if a.strip()]
+    if not question or len(answers) < 2:
+        return jsonify({'error': 'Question and at least 2 answers required'}), 400
+    db.update_poll(poll_id, question, answers)
+    return jsonify({'success': True})
+
+
 @app.route('/api/admin/polls/<int:poll_id>', methods=['DELETE'])
 @requires_auth
 def delete_poll(poll_id):
@@ -200,10 +218,11 @@ def create_survey():
 
     title = data['title'].strip()
     poll_ids = data['poll_ids']
-    if not title or not poll_ids:
-        return jsonify({'error': 'Title and at least one poll required'}), 400
+    show_title = data.get('show_title', True)
+    if not title:
+        return jsonify({'error': 'Title required'}), 400
 
-    survey_id = db.create_survey(title, poll_ids)
+    survey_id = db.create_survey(title, poll_ids, show_title=show_title)
     return jsonify({'success': True, 'survey_id': survey_id})
 
 
@@ -216,10 +235,11 @@ def update_survey(survey_id):
 
     title = data['title'].strip()
     poll_ids = data['poll_ids']
-    if not title or not poll_ids:
-        return jsonify({'error': 'Title and at least one poll required'}), 400
+    show_title = data.get('show_title', None)
+    if not title:
+        return jsonify({'error': 'Title required'}), 400
 
-    db.update_survey(survey_id, title, poll_ids)
+    db.update_survey(survey_id, title, poll_ids, show_title=show_title)
     return jsonify({'success': True})
 
 
@@ -246,6 +266,79 @@ def get_survey_stats(survey_id):
     if stats is None:
         return jsonify({'error': 'Survey not found'}), 404
     return jsonify({'stats': stats})
+
+
+@app.route('/api/admin/surveys/<int:survey_id>/export', methods=['GET'])
+@requires_auth
+def export_survey_excel(survey_id):
+    stats = db.get_survey_stats(survey_id)
+    if stats is None:
+        return jsonify({'error': 'Survey not found'}), 404
+    survey = db.get_survey(survey_id)
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = 'Статистика'
+
+    header_font = Font(bold=True)
+    header_fill = PatternFill(start_color='4472C4', end_color='4472C4', fill_type='solid')
+    header_font_white = Font(bold=True, color='FFFFFF')
+    subheader_fill = PatternFill(start_color='D9E1F2', end_color='D9E1F2', fill_type='solid')
+
+    row = 1
+    ws.cell(row=row, column=1, value=f'Опрос: {survey["title"]}').font = Font(bold=True, size=14)
+    row += 2
+
+    for item in stats:
+        poll = item['poll']
+        poll_stats = item['stats']
+
+        # Question header
+        q_cell = ws.cell(row=row, column=1, value=poll['question'])
+        q_cell.font = header_font_white
+        q_cell.fill = header_fill
+        ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=3)
+        row += 1
+
+        # Column headers
+        for col, label in enumerate(['Вариант ответа', 'Голосов', '%'], start=1):
+            c = ws.cell(row=row, column=col, value=label)
+            c.font = header_font
+            c.fill = subheader_fill
+        row += 1
+
+        total = poll_stats['total_votes']
+        for idx, answer in enumerate(poll['answers']):
+            count = poll_stats['answer_counts'].get(idx, 0)
+            pct = round(count / total * 100, 1) if total > 0 else 0
+            ws.cell(row=row, column=1, value=answer)
+            ws.cell(row=row, column=2, value=count)
+            ws.cell(row=row, column=3, value=f'{pct}%')
+            row += 1
+
+        # Total row
+        t_cell = ws.cell(row=row, column=1, value='Итого')
+        t_cell.font = header_font
+        ws.cell(row=row, column=2, value=total).font = header_font
+        row += 2  # blank line between questions
+
+    # Auto-fit columns
+    for col in ws.columns:
+        max_len = max((len(str(c.value)) if c.value else 0) for c in col)
+        ws.column_dimensions[col[0].column_letter].width = min(max_len + 4, 60)
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+
+    safe_title = survey['title'].replace('/', '-').replace('\\', '-')
+    filename = f'survey_{survey_id}_{safe_title}.xlsx'
+    return send_file(
+        buf,
+        as_attachment=True,
+        download_name=filename,
+        mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+    )
 
 
 # ---------------------------------------------------------------- admin API — active surveys queue

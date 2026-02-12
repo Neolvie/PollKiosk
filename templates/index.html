@@ -358,11 +358,12 @@ function buildPollList(surveys) {
     for (const survey of surveys) {
         for (const poll of survey.polls) {
             list.push({
-                surveyTitle: survey.title,
-                surveyId:    survey.id,
-                pollId:      poll.id,
-                question:    poll.question,
-                answers:     poll.answers
+                surveyTitle:    survey.title,
+                showSurveyTitle: survey.show_title !== false,
+                surveyId:        survey.id,
+                pollId:          poll.id,
+                question:        poll.question,
+                answers:         poll.answers
             });
         }
     }
@@ -386,7 +387,9 @@ function showQuestion(idx) {
     const poll = allPolls[idx];
 
     document.getElementById('waitingScreen').style.display = 'none';
-    document.getElementById('surveyTitle').textContent = poll.surveyTitle;
+    const titleEl = document.getElementById('surveyTitle');
+    titleEl.textContent = poll.showSurveyTitle ? poll.surveyTitle : '';
+    titleEl.style.display = poll.showSurveyTitle ? '' : 'none';
     document.getElementById('questionText').textContent = poll.question;
 
     // Progress

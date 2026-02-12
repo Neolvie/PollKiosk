@@ -36,9 +36,16 @@ class Database:
             CREATE TABLE IF NOT EXISTS surveys (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 title TEXT NOT NULL,
+                show_title INTEGER NOT NULL DEFAULT 1,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         ''')
+
+        # Migration: add show_title if column is missing (existing DBs)
+        try:
+            cursor.execute('ALTER TABLE surveys ADD COLUMN show_title INTEGER NOT NULL DEFAULT 1')
+        except Exception:
+            pass
 
         # Survey-to-polls mapping with ordering
         cursor.execute('''
@@ -132,6 +139,17 @@ class Database:
             for r in rows
         ]
 
+    def update_poll(self, poll_id, question, answers):
+        """Update question text and answers"""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            'UPDATE polls SET question = ?, answers = ? WHERE id = ?',
+            (question, json.dumps(answers, ensure_ascii=False), poll_id)
+        )
+        conn.commit()
+        conn.close()
+
     def delete_poll(self, poll_id):
         """Delete a poll and all its votes"""
         conn = self.get_connection()
@@ -142,11 +160,11 @@ class Database:
 
     # ---------------------------------------------------------------- surveys
 
-    def create_survey(self, title, poll_ids):
+    def create_survey(self, title, poll_ids, show_title=True):
         """Create a survey with ordered list of poll IDs"""
         conn = self.get_connection()
         cursor = conn.cursor()
-        cursor.execute('INSERT INTO surveys (title) VALUES (?)', (title,))
+        cursor.execute('INSERT INTO surveys (title, show_title) VALUES (?, ?)', (title, 1 if show_title else 0))
         survey_id = cursor.lastrowid
         for pos, poll_id in enumerate(poll_ids):
             cursor.execute(
@@ -157,11 +175,15 @@ class Database:
         conn.close()
         return survey_id
 
-    def update_survey(self, survey_id, title, poll_ids):
-        """Replace survey title and its question list"""
+    def update_survey(self, survey_id, title, poll_ids, show_title=None):
+        """Replace survey title, show_title flag and its question list"""
         conn = self.get_connection()
         cursor = conn.cursor()
-        cursor.execute('UPDATE surveys SET title = ? WHERE id = ?', (title, survey_id))
+        if show_title is None:
+            cursor.execute('UPDATE surveys SET title = ? WHERE id = ?', (title, survey_id))
+        else:
+            cursor.execute('UPDATE surveys SET title = ?, show_title = ? WHERE id = ?',
+                           (title, 1 if show_title else 0, survey_id))
         cursor.execute('DELETE FROM survey_questions WHERE survey_id = ?', (survey_id,))
         for pos, poll_id in enumerate(poll_ids):
             cursor.execute(
@@ -180,7 +202,7 @@ class Database:
         if not row:
             conn.close()
             return None
-        survey = {'id': row['id'], 'title': row['title'], 'created_at': row['created_at']}
+        survey = {'id': row['id'], 'title': row['title'], 'show_title': bool(row['show_title']), 'created_at': row['created_at']}
         cursor.execute('''
             SELECT p.id, p.question, p.answers, p.created_at, sq.position
             FROM survey_questions sq
@@ -206,7 +228,7 @@ class Database:
         conn = self.get_connection()
         cursor = conn.cursor()
         cursor.execute('''
-            SELECT s.id, s.title, s.created_at, COUNT(sq.id) as poll_count
+            SELECT s.id, s.title, s.show_title, s.created_at, COUNT(sq.id) as poll_count
             FROM surveys s
             LEFT JOIN survey_questions sq ON sq.survey_id = s.id
             GROUP BY s.id
@@ -215,7 +237,8 @@ class Database:
         rows = cursor.fetchall()
         conn.close()
         return [
-            {'id': r['id'], 'title': r['title'], 'created_at': r['created_at'], 'poll_count': r['poll_count']}
+            {'id': r['id'], 'title': r['title'], 'show_title': bool(r['show_title']),
+             'created_at': r['created_at'], 'poll_count': r['poll_count']}
             for r in rows
         ]
 
