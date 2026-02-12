@@ -9,7 +9,10 @@ from datetime import datetime
 from database import Database
 
 app = Flask(__name__)
-db = Database('polls.db')
+
+# Определяем путь к базе данных
+db_path = os.path.join('data', 'polls.db') if os.path.exists('data') else 'polls.db'
+db = Database(db_path)
 
 # Load configuration
 def load_config():
@@ -186,4 +189,10 @@ if __name__ == '__main__':
         print("Created default config.json")
         print(f"Default admin credentials: admin / changeme")
     
-    app.run(host='0.0.0.0', port=5000, debug=True)
+    # Создать папку data если не существует
+    if not os.path.exists('data'):
+        os.makedirs('data')
+        print("Created data directory")
+    
+    # Запускаем на 0.0.0.0 чтобы было доступно извне
+    app.run(host='0.0.0.0', port=5000, debug=False)
