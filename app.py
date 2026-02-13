@@ -123,6 +123,7 @@ def submit_vote():
 
     poll_id = data['poll_id']
     answer_index = data['answer_index']
+    session_id = data.get('session_id') or None
 
     poll = db.get_poll(poll_id)
     if not poll:
@@ -131,7 +132,7 @@ def submit_vote():
     if answer_index < 0 or answer_index >= len(poll['answers']):
         return jsonify({'error': 'Invalid answer index'}), 400
 
-    db.save_vote(poll_id, answer_index, request.remote_addr)
+    db.save_vote(poll_id, answer_index, request.remote_addr, session_id=session_id)
     return jsonify({'success': True})
 
 
@@ -271,61 +272,82 @@ def get_survey_stats(survey_id):
 @app.route('/api/admin/surveys/<int:survey_id>/export', methods=['GET'])
 @requires_auth
 def export_survey_excel(survey_id):
-    stats = db.get_survey_stats(survey_id)
-    if stats is None:
+    data = db.get_survey_respondents(survey_id)
+    if data is None:
         return jsonify({'error': 'Survey not found'}), 404
     survey = db.get_survey(survey_id)
 
+    polls  = data['polls']   # ordered list of polls
+    rows   = data['rows']    # list of respondent dicts
+
     wb = openpyxl.Workbook()
     ws = wb.active
-    ws.title = 'Статистика'
+    ws.title = 'Ответы'
 
-    header_font = Font(bold=True)
-    header_fill = PatternFill(start_color='4472C4', end_color='4472C4', fill_type='solid')
-    header_font_white = Font(bold=True, color='FFFFFF')
-    subheader_fill = PatternFill(start_color='D9E1F2', end_color='D9E1F2', fill_type='solid')
+    bold       = Font(bold=True)
+    white_bold = Font(bold=True, color='FFFFFF')
+    fill_survey = PatternFill(start_color='4472C4', end_color='4472C4', fill_type='solid')  # blue — survey group header
+    fill_q      = PatternFill(start_color='D9E1F2', end_color='D9E1F2', fill_type='solid')  # light — question header
+    fill_meta   = PatternFill(start_color='2D2150', end_color='2D2150', fill_type='solid')  # dark — №/дата
+    center      = Alignment(horizontal='center', vertical='center', wrap_text=True)
 
-    row = 1
-    ws.cell(row=row, column=1, value=f'Опрос: {survey["title"]}').font = Font(bold=True, size=14)
-    row += 2
+    # ── Row 1: survey title spanning all question columns ──────────────────
+    # Columns layout: [№] [Дата] [Q1] [Q2] ... [Qn]
+    META_COLS = 2  # № and Дата
+    total_q   = len(polls)
 
-    for item in stats:
-        poll = item['poll']
-        poll_stats = item['stats']
+    title_cell = ws.cell(row=1, column=1, value=f'Опрос: {survey["title"]}')
+    title_cell.font = Font(bold=True, size=13, color='FFFFFF')
+    title_cell.fill = fill_survey
+    title_cell.alignment = center
+    if total_q > 0:
+        ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=META_COLS + total_q)
 
-        # Question header
-        q_cell = ws.cell(row=row, column=1, value=poll['question'])
-        q_cell.font = header_font_white
-        q_cell.fill = header_fill
-        ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=3)
-        row += 1
+    # ── Row 2: column headers ───────────────────────────────────────────────
+    for ci, label in enumerate(['№', 'Дата'], start=1):
+        c = ws.cell(row=2, column=ci, value=label)
+        c.font = white_bold
+        c.fill = fill_meta
+        c.alignment = center
 
-        # Column headers
-        for col, label in enumerate(['Вариант ответа', 'Голосов', '%'], start=1):
-            c = ws.cell(row=row, column=col, value=label)
-            c.font = header_font
-            c.fill = subheader_fill
-        row += 1
+    for qi, poll in enumerate(polls):
+        ci = META_COLS + qi + 1
+        c = ws.cell(row=2, column=ci, value=poll['question'])
+        c.font = bold
+        c.fill = fill_q
+        c.alignment = Alignment(horizontal='left', vertical='center', wrap_text=True)
 
-        total = poll_stats['total_votes']
-        for idx, answer in enumerate(poll['answers']):
-            count = poll_stats['answer_counts'].get(idx, 0)
-            pct = round(count / total * 100, 1) if total > 0 else 0
-            ws.cell(row=row, column=1, value=answer)
-            ws.cell(row=row, column=2, value=count)
-            ws.cell(row=row, column=3, value=f'{pct}%')
-            row += 1
+    ws.row_dimensions[2].height = 40
 
-        # Total row
-        t_cell = ws.cell(row=row, column=1, value='Итого')
-        t_cell.font = header_font
-        ws.cell(row=row, column=2, value=total).font = header_font
-        row += 2  # blank line between questions
+    # ── Data rows ───────────────────────────────────────────────────────────
+    for ri, resp in enumerate(rows, start=1):
+        r = ri + 2  # actual Excel row (1=title, 2=header, 3+= data)
+        # № column
+        ws.cell(row=r, column=1, value=ri).alignment = center
+        # Дата
+        ws.cell(row=r, column=2, value=resp['voted_at']).alignment = center
+        # Answers
+        for qi, poll in enumerate(polls):
+            ci = META_COLS + qi + 1
+            ans = resp['answers'].get(poll['id'])
+            ws.cell(row=r, column=ci, value=ans['answer_text'] if ans else '').alignment = \
+                Alignment(horizontal='left', vertical='center', wrap_text=True)
 
-    # Auto-fit columns
-    for col in ws.columns:
-        max_len = max((len(str(c.value)) if c.value else 0) for c in col)
-        ws.column_dimensions[col[0].column_letter].width = min(max_len + 4, 60)
+    # ── Column widths ───────────────────────────────────────────────────────
+    ws.column_dimensions['A'].width = 5   # №
+    ws.column_dimensions['B'].width = 18  # Дата
+    for qi in range(total_q):
+        letter = ws.cell(row=2, column=META_COLS + qi + 1).column_letter
+        # Width based on longest answer option or question (capped)
+        poll = polls[qi]
+        max_len = max(
+            len(poll['question']),
+            max((len(a) for a in poll['answers']), default=0)
+        )
+        ws.column_dimensions[letter].width = min(max_len + 2, 40)
+
+    # ── Freeze top 2 rows ───────────────────────────────────────────────────
+    ws.freeze_panes = 'A3'
 
     buf = io.BytesIO()
     wb.save(buf)
