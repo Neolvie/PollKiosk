@@ -364,7 +364,7 @@ class Database:
         cursor = conn.cursor()
         placeholders = ','.join('?' * len(poll_ids))
         cursor.execute(f'''
-            SELECT poll_id, answer_index, session_id, voted_at
+            SELECT poll_id, answer_index, session_id, ip_address, voted_at
             FROM votes
             WHERE poll_id IN ({placeholders})
             ORDER BY voted_at
@@ -375,19 +375,50 @@ class Database:
         # Build poll lookup
         poll_map = {p['id']: p for p in polls}
 
-        # Group by session_id; anonymous votes (NULL) each get a unique key
-        # Use ordered dict to preserve time order
+        # Group votes into respondent sessions.
+        # Priority: use session_id when present.
+        # Fallback for legacy anonymous votes (no session_id): group by
+        # ip_address within a 10-minute sliding window so that one person
+        # answering several questions in a row appears as a single row.
         from collections import OrderedDict
-        sessions = OrderedDict()
+        from datetime import datetime, timedelta
+
+        ANON_WINDOW = timedelta(minutes=10)
+
+        sessions = OrderedDict()   # key -> session dict
+        # Track last-vote-time for each (ip, anon_group_key) to merge anon votes
+        anon_last: dict = {}       # ip -> (last_voted_at, group_key)
         anon_counter = 0
+
         for r in raw:
             sid = r['session_id']
-            if not sid:
-                anon_counter += 1
-                sid = f'__anon_{anon_counter}__'
-            if sid not in sessions:
-                sessions[sid] = {'session_id': sid, 'voted_at': r['voted_at'], 'answers': {}}
-            sessions[sid]['answers'][r['poll_id']] = {
+            if sid:
+                key = sid
+            else:
+                ip = r['ip_address'] or '__no_ip__'
+                try:
+                    ts = datetime.fromisoformat(r['voted_at'])
+                except Exception:
+                    ts = None
+                if ip in anon_last and ts is not None:
+                    last_ts, existing_key = anon_last[ip]
+                    try:
+                        last_dt = datetime.fromisoformat(last_ts)
+                    except Exception:
+                        last_dt = None
+                    if last_dt is not None and (ts - last_dt) <= ANON_WINDOW:
+                        key = existing_key
+                    else:
+                        anon_counter += 1
+                        key = f'__anon_{anon_counter}__'
+                else:
+                    anon_counter += 1
+                    key = f'__anon_{anon_counter}__'
+                anon_last[ip] = (r['voted_at'], key)
+
+            if key not in sessions:
+                sessions[key] = {'session_id': key, 'voted_at': r['voted_at'], 'answers': {}}
+            sessions[key]['answers'][r['poll_id']] = {
                 'answer_index': r['answer_index'],
                 'answer_text': poll_map[r['poll_id']]['answers'][r['answer_index']]
                     if r['answer_index'] < len(poll_map[r['poll_id']]['answers']) else '?'

@@ -401,7 +401,10 @@
         <div class="card">
             <div class="card-header">
                 <h2 class="card-title">Опросы и вопросы</h2>
-                <button class="btn btn-primary" onclick="showNewSurveyForm()">+ Новый опрос</button>
+                <div style="display:flex;gap:0.5rem;align-items:center;">
+                    <a href="/api/admin/export" class="btn btn-warning btn-sm">⬇ Скачать всё (Excel)</a>
+                    <button class="btn btn-primary" onclick="showNewSurveyForm()">+ Новый опрос</button>
+                </div>
             </div>
 
             <!-- Inline form: create new survey -->
