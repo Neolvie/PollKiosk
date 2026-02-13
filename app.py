@@ -269,6 +269,83 @@ def get_survey_stats(survey_id):
     return jsonify({'stats': stats})
 
 
+# ---------------------------------------------------------------- Excel helpers
+
+# Shared style constants
+_BOLD       = Font(bold=True)
+_WHITE_BOLD = Font(bold=True, color='FFFFFF')
+_FILL_SURVEY = PatternFill(start_color='4472C4', end_color='4472C4', fill_type='solid')
+_FILL_Q      = PatternFill(start_color='D9E1F2', end_color='D9E1F2', fill_type='solid')
+_FILL_META   = PatternFill(start_color='2D2150', end_color='2D2150', fill_type='solid')
+_CENTER      = Alignment(horizontal='center', vertical='center', wrap_text=True)
+_LEFT_WRAP   = Alignment(horizontal='left', vertical='center', wrap_text=True)
+META_COLS    = 2  # № and Дата
+
+
+def _write_survey_block(ws, survey_title, polls, rows, start_row):
+    """
+    Write one survey block (title row + header row + data rows) into worksheet
+    starting at start_row.  Returns the next free row number after the block.
+    Columns layout: [№] [Дата] [Q1] [Q2] ... [Qn]
+    """
+    total_q = len(polls)
+    r = start_row
+
+    # ── Title row ───────────────────────────────────────────────────────────
+    c = ws.cell(row=r, column=1, value=f'Опрос: {survey_title}')
+    c.font = Font(bold=True, size=13, color='FFFFFF')
+    c.fill = _FILL_SURVEY
+    c.alignment = _CENTER
+    if total_q > 0:
+        ws.merge_cells(start_row=r, start_column=1, end_row=r, end_column=META_COLS + total_q)
+    r += 1
+
+    # ── Header row ──────────────────────────────────────────────────────────
+    for ci, label in enumerate(['№', 'Дата'], start=1):
+        hc = ws.cell(row=r, column=ci, value=label)
+        hc.font = _WHITE_BOLD
+        hc.fill = _FILL_META
+        hc.alignment = _CENTER
+
+    for qi, poll in enumerate(polls):
+        ci = META_COLS + qi + 1
+        hc = ws.cell(row=r, column=ci, value=poll['question'])
+        hc.font = _BOLD
+        hc.fill = _FILL_Q
+        hc.alignment = _LEFT_WRAP
+
+    ws.row_dimensions[r].height = 40
+    r += 1
+
+    # ── Data rows ────────────────────────────────────────────────────────────
+    for ri, resp in enumerate(rows, start=1):
+        ws.cell(row=r, column=1, value=ri).alignment = _CENTER
+        ws.cell(row=r, column=2, value=resp['voted_at']).alignment = _CENTER
+        for qi, poll in enumerate(polls):
+            ci = META_COLS + qi + 1
+            ans = resp['answers'].get(poll['id'])
+            ws.cell(row=r, column=ci,
+                    value=ans['answer_text'] if ans else '').alignment = _LEFT_WRAP
+        r += 1
+
+    # ── Column widths (only set when wider than current) ────────────────────
+    col_a = ws.column_dimensions['A']
+    if col_a.width < 5:
+        col_a.width = 5
+    col_b = ws.column_dimensions['B']
+    if col_b.width < 18:
+        col_b.width = 18
+    for qi, poll in enumerate(polls):
+        letter = ws.cell(row=start_row + 1, column=META_COLS + qi + 1).column_letter
+        desired = min(max(len(poll['question']),
+                          max((len(a) for a in poll['answers']), default=0)) + 2, 40)
+        cur = ws.column_dimensions[letter].width or 0
+        if desired > cur:
+            ws.column_dimensions[letter].width = desired
+
+    return r  # next free row
+
+
 @app.route('/api/admin/surveys/<int:survey_id>/export', methods=['GET'])
 @requires_auth
 def export_survey_excel(survey_id):
@@ -277,76 +354,11 @@ def export_survey_excel(survey_id):
         return jsonify({'error': 'Survey not found'}), 404
     survey = db.get_survey(survey_id)
 
-    polls  = data['polls']   # ordered list of polls
-    rows   = data['rows']    # list of respondent dicts
-
     wb = openpyxl.Workbook()
     ws = wb.active
     ws.title = 'Ответы'
 
-    bold       = Font(bold=True)
-    white_bold = Font(bold=True, color='FFFFFF')
-    fill_survey = PatternFill(start_color='4472C4', end_color='4472C4', fill_type='solid')  # blue — survey group header
-    fill_q      = PatternFill(start_color='D9E1F2', end_color='D9E1F2', fill_type='solid')  # light — question header
-    fill_meta   = PatternFill(start_color='2D2150', end_color='2D2150', fill_type='solid')  # dark — №/дата
-    center      = Alignment(horizontal='center', vertical='center', wrap_text=True)
-
-    # ── Row 1: survey title spanning all question columns ──────────────────
-    # Columns layout: [№] [Дата] [Q1] [Q2] ... [Qn]
-    META_COLS = 2  # № and Дата
-    total_q   = len(polls)
-
-    title_cell = ws.cell(row=1, column=1, value=f'Опрос: {survey["title"]}')
-    title_cell.font = Font(bold=True, size=13, color='FFFFFF')
-    title_cell.fill = fill_survey
-    title_cell.alignment = center
-    if total_q > 0:
-        ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=META_COLS + total_q)
-
-    # ── Row 2: column headers ───────────────────────────────────────────────
-    for ci, label in enumerate(['№', 'Дата'], start=1):
-        c = ws.cell(row=2, column=ci, value=label)
-        c.font = white_bold
-        c.fill = fill_meta
-        c.alignment = center
-
-    for qi, poll in enumerate(polls):
-        ci = META_COLS + qi + 1
-        c = ws.cell(row=2, column=ci, value=poll['question'])
-        c.font = bold
-        c.fill = fill_q
-        c.alignment = Alignment(horizontal='left', vertical='center', wrap_text=True)
-
-    ws.row_dimensions[2].height = 40
-
-    # ── Data rows ───────────────────────────────────────────────────────────
-    for ri, resp in enumerate(rows, start=1):
-        r = ri + 2  # actual Excel row (1=title, 2=header, 3+= data)
-        # № column
-        ws.cell(row=r, column=1, value=ri).alignment = center
-        # Дата
-        ws.cell(row=r, column=2, value=resp['voted_at']).alignment = center
-        # Answers
-        for qi, poll in enumerate(polls):
-            ci = META_COLS + qi + 1
-            ans = resp['answers'].get(poll['id'])
-            ws.cell(row=r, column=ci, value=ans['answer_text'] if ans else '').alignment = \
-                Alignment(horizontal='left', vertical='center', wrap_text=True)
-
-    # ── Column widths ───────────────────────────────────────────────────────
-    ws.column_dimensions['A'].width = 5   # №
-    ws.column_dimensions['B'].width = 18  # Дата
-    for qi in range(total_q):
-        letter = ws.cell(row=2, column=META_COLS + qi + 1).column_letter
-        # Width based on longest answer option or question (capped)
-        poll = polls[qi]
-        max_len = max(
-            len(poll['question']),
-            max((len(a) for a in poll['answers']), default=0)
-        )
-        ws.column_dimensions[letter].width = min(max_len + 2, 40)
-
-    # ── Freeze top 2 rows ───────────────────────────────────────────────────
+    _write_survey_block(ws, survey['title'], data['polls'], data['rows'], start_row=1)
     ws.freeze_panes = 'A3'
 
     buf = io.BytesIO()
@@ -355,6 +367,44 @@ def export_survey_excel(survey_id):
 
     safe_title = survey['title'].replace('/', '-').replace('\\', '-')
     filename = f'survey_{survey_id}_{safe_title}.xlsx'
+    return send_file(
+        buf,
+        as_attachment=True,
+        download_name=filename,
+        mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+    )
+
+
+@app.route('/api/admin/export', methods=['GET'])
+@requires_auth
+def export_all_surveys_excel():
+    """Export all surveys into one Excel sheet, blocks separated by an empty row."""
+    surveys = db.get_all_surveys()
+    if not surveys:
+        return jsonify({'error': 'No surveys found'}), 404
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = 'Все опросы'
+
+    current_row = 1
+    for idx, s in enumerate(surveys):
+        data = db.get_survey_respondents(s['id'])
+        if data is None:
+            continue
+        current_row = _write_survey_block(ws, s['title'], data['polls'], data['rows'],
+                                          start_row=current_row)
+        current_row += 1  # empty separator row between surveys
+
+    # Freeze only the very first header row of first block
+    ws.freeze_panes = 'A3'
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+
+    from datetime import date
+    filename = f'all_surveys_{date.today().isoformat()}.xlsx'
     return send_file(
         buf,
         as_attachment=True,
