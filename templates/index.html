@@ -346,6 +346,16 @@ let allPolls         = [];   // [{surveyTitle, surveyId, pollId, question, answe
 let currentPollIndex = -1;   // index in allPolls
 let sessionAnswered  = 0;    // how many questions answered in this session (for mid-session guard)
 let votingLocked     = false;
+let currentSessionId = null; // UUID generated per respondent session, sent with each vote
+
+function generateSessionId() {
+    if (crypto && crypto.randomUUID) return crypto.randomUUID();
+    // Fallback for older browsers
+    return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => {
+        const r = Math.random() * 16 | 0;
+        return (c === 'x' ? r : (r & 0x3 | 0x8)).toString(16);
+    });
+}
 
 const THANK_YOU_DELAY_MS = 3000;   // show thank-you modal before resetting
 const POLL_INTERVAL_MS   = 5000;   // how often to check for config changes
@@ -435,7 +445,7 @@ async function selectAnswer(answerIndex) {
         await fetch('/api/vote', {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({poll_id: poll.pollId, answer_index: answerIndex})
+            body: JSON.stringify({poll_id: poll.pollId, answer_index: answerIndex, session_id: currentSessionId})
         });
     } catch (e) {
         console.error('Vote error', e);
@@ -483,6 +493,7 @@ function startSession(surveys, version) {
     currentPollIndex = 0;
     sessionAnswered  = 0;
     votingLocked     = false;
+    currentSessionId = generateSessionId(); // new UUID per respondent
 
     if (allPolls.length === 0) {
         showWaiting();

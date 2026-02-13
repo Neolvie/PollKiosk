@@ -303,6 +303,15 @@ class TestVoting:
         assert stats['answer_counts']['0'] == 2
         assert stats['answer_counts']['1'] == 1
 
+    def test_vote_with_session_id(self, client):
+        pid = create_poll(client, 'Q?', ['Yes', 'No'])
+        r = client.post('/api/vote', json={
+            'poll_id': pid, 'answer_index': 0,
+            'session_id': 'test-session-uuid-123'
+        })
+        assert r.status_code == 200
+        assert r.get_json()['success'] is True
+
 
 # ===========================================================================
 # EXCEL EXPORT
@@ -313,12 +322,42 @@ class TestExcelExport:
     def test_export_returns_xlsx(self, client):
         pid = create_poll(client, 'Export Q?', ['Opt A', 'Opt B'])
         sid = create_survey(client, 'Export Survey', [pid])
-        client.post('/api/vote', json={'poll_id': pid, 'answer_index': 0})
+        client.post('/api/vote', json={'poll_id': pid, 'answer_index': 0,
+                                       'session_id': 'sess-1'})
 
         r = client.get(f'/api/admin/surveys/{sid}/export', headers=auth_headers())
         assert r.status_code == 200
         ct = r.content_type
         assert 'spreadsheetml' in ct or 'openxmlformats' in ct
+
+    def test_export_per_respondent_rows(self, client):
+        """Each session_id must produce exactly one row in the Excel."""
+        import openpyxl, io
+        pid1 = create_poll(client, 'Q1', ['A', 'B'])
+        pid2 = create_poll(client, 'Q2', ['X', 'Y'])
+        sid  = create_survey(client, 'Resp Survey', [pid1, pid2])
+
+        # Respondent 1: answers both questions
+        client.post('/api/vote', json={'poll_id': pid1, 'answer_index': 0, 'session_id': 'r1'})
+        client.post('/api/vote', json={'poll_id': pid2, 'answer_index': 1, 'session_id': 'r1'})
+        # Respondent 2: answers only Q1
+        client.post('/api/vote', json={'poll_id': pid1, 'answer_index': 1, 'session_id': 'r2'})
+
+        r = client.get(f'/api/admin/surveys/{sid}/export', headers=auth_headers())
+        wb = openpyxl.load_workbook(io.BytesIO(r.data))
+        ws = wb.active
+
+        # Row 1 = title, Row 2 = headers, Rows 3+ = respondents
+        data_rows = [ws.cell(row=i, column=1).value for i in range(3, ws.max_row + 1)
+                     if ws.cell(row=i, column=1).value is not None]
+        assert len(data_rows) == 2  # 2 respondents
+
+        # Check answers in row 3 (respondent 1): col3=Q1 answer, col4=Q2 answer
+        assert ws.cell(row=3, column=3).value == 'A'   # pid1 index 0
+        assert ws.cell(row=3, column=4).value == 'Y'   # pid2 index 1
+        # Respondent 2: answered Q1 only, Q2 cell is empty (None or '')
+        assert ws.cell(row=4, column=3).value == 'B'           # pid1 index 1
+        assert (ws.cell(row=4, column=4).value or '') == ''    # no answer for Q2
 
     def test_export_unknown_survey_returns_404(self, client):
         r = client.get('/api/admin/surveys/9999/export', headers=auth_headers())

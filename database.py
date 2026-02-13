@@ -77,10 +77,17 @@ class Database:
                 poll_id INTEGER NOT NULL,
                 answer_index INTEGER NOT NULL,
                 ip_address TEXT,
+                session_id TEXT,
                 voted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (poll_id) REFERENCES polls(id) ON DELETE CASCADE
             )
         ''')
+
+        # Migration: add session_id if column is missing (existing DBs)
+        try:
+            cursor.execute('ALTER TABLE votes ADD COLUMN session_id TEXT')
+        except Exception:
+            pass
 
         # Indexes
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_votes_poll_id ON votes(poll_id)')
@@ -296,13 +303,13 @@ class Database:
 
     # ------------------------------------------------------------------ votes
 
-    def save_vote(self, poll_id, answer_index, ip_address=None):
+    def save_vote(self, poll_id, answer_index, ip_address=None, session_id=None):
         """Save a vote"""
         conn = self.get_connection()
         cursor = conn.cursor()
         cursor.execute(
-            'INSERT INTO votes (poll_id, answer_index, ip_address) VALUES (?, ?, ?)',
-            (poll_id, answer_index, ip_address)
+            'INSERT INTO votes (poll_id, answer_index, ip_address, session_id) VALUES (?, ?, ?, ?)',
+            (poll_id, answer_index, ip_address, session_id)
         )
         conn.commit()
         conn.close()
@@ -333,6 +340,60 @@ class Database:
         ]
         conn.close()
         return {'total_votes': total_votes, 'answer_counts': answer_counts, 'recent_votes': recent_votes}
+
+    def get_survey_respondents(self, survey_id):
+        """
+        Return per-respondent answers for all polls in a survey.
+        Result: {
+            'polls': [{'id', 'question', 'answers'}, ...],   # ordered
+            'rows':  [{'session_id', 'voted_at', 'answers': {poll_id: answer_text}}, ...]
+        }
+        Rows ordered by first vote time, one row per unique session_id.
+        Sessions without a session_id are each treated as a separate anonymous respondent.
+        """
+        survey = self.get_survey(survey_id)
+        if not survey:
+            return None
+
+        polls = survey['polls']
+        poll_ids = [p['id'] for p in polls]
+        if not poll_ids:
+            return {'polls': polls, 'rows': []}
+
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        placeholders = ','.join('?' * len(poll_ids))
+        cursor.execute(f'''
+            SELECT poll_id, answer_index, session_id, voted_at
+            FROM votes
+            WHERE poll_id IN ({placeholders})
+            ORDER BY voted_at
+        ''', poll_ids)
+        raw = cursor.fetchall()
+        conn.close()
+
+        # Build poll lookup
+        poll_map = {p['id']: p for p in polls}
+
+        # Group by session_id; anonymous votes (NULL) each get a unique key
+        # Use ordered dict to preserve time order
+        from collections import OrderedDict
+        sessions = OrderedDict()
+        anon_counter = 0
+        for r in raw:
+            sid = r['session_id']
+            if not sid:
+                anon_counter += 1
+                sid = f'__anon_{anon_counter}__'
+            if sid not in sessions:
+                sessions[sid] = {'session_id': sid, 'voted_at': r['voted_at'], 'answers': {}}
+            sessions[sid]['answers'][r['poll_id']] = {
+                'answer_index': r['answer_index'],
+                'answer_text': poll_map[r['poll_id']]['answers'][r['answer_index']]
+                    if r['answer_index'] < len(poll_map[r['poll_id']]['answers']) else '?'
+            }
+
+        return {'polls': polls, 'rows': list(sessions.values())}
 
     def get_survey_stats(self, survey_id):
         """Get aggregated stats for all polls in a survey"""
