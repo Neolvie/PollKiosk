@@ -55,9 +55,10 @@ def auth_headers():
 # Helper shortcuts
 # ---------------------------------------------------------------------------
 
-def create_poll(client, question='Q1', answers=('A', 'B')):
+def create_poll(client, question='Q1', answers=('A', 'B'), multi_select=False):
     r = client.post('/api/admin/polls',
-                    json={'question': question, 'answers': list(answers)},
+                    json={'question': question, 'answers': list(answers),
+                          'multi_select': multi_select},
                     headers=auth_headers())
     assert r.status_code == 200
     return r.get_json()['poll_id']
@@ -119,6 +120,18 @@ class TestPolls:
     def test_poll_requires_auth(self, client):
         r = client.get('/api/admin/polls')
         assert r.status_code == 401
+
+    def test_create_poll_multi_select(self, client):
+        pid = create_poll(client, 'Pick all', ['A', 'B', 'C'], multi_select=True)
+        r = client.get('/api/admin/polls', headers=auth_headers())
+        poll = r.get_json()['polls'][0]
+        assert poll['multi_select'] is True
+
+    def test_create_poll_single_select_default(self, client):
+        pid = create_poll(client, 'Pick one', ['A', 'B'])
+        r = client.get('/api/admin/polls', headers=auth_headers())
+        poll = r.get_json()['polls'][0]
+        assert poll['multi_select'] is False
 
 
 # ===========================================================================
@@ -312,6 +325,40 @@ class TestVoting:
         assert r.status_code == 200
         assert r.get_json()['success'] is True
 
+    def test_vote_multi_select(self, client):
+        pid = create_poll(client, 'Pick all', ['A', 'B', 'C'], multi_select=True)
+        r = client.post('/api/vote', json={
+            'poll_id': pid, 'answer_indices': [0, 2],
+            'session_id': 'ms-sess'
+        })
+        assert r.status_code == 200
+        assert r.get_json()['success'] is True
+
+    def test_vote_multi_select_invalid_index(self, client):
+        pid = create_poll(client, 'Pick all', ['A', 'B'], multi_select=True)
+        r = client.post('/api/vote', json={'poll_id': pid, 'answer_indices': [0, 5]})
+        assert r.status_code == 400
+
+    def test_vote_multi_select_empty_list(self, client):
+        pid = create_poll(client, 'Pick all', ['A', 'B'], multi_select=True)
+        r = client.post('/api/vote', json={'poll_id': pid, 'answer_indices': []})
+        assert r.status_code == 400
+
+    def test_multi_select_respondents_grouped(self, client):
+        """Multiple answer rows for same session_id + poll_id must be one respondent row."""
+        pid = create_poll(client, 'Pick all', ['A', 'B', 'C'], multi_select=True)
+        sid = create_survey(client, 'MS Survey', [pid])
+        # Respondent 1 picks A and C
+        client.post('/api/vote', json={'poll_id': pid, 'answer_indices': [0, 2], 'session_id': 'r1'})
+        # Respondent 2 picks B
+        client.post('/api/vote', json={'poll_id': pid, 'answer_indices': [1], 'session_id': 'r2'})
+
+        # Stats should count total individual answer selections
+        r = client.get(f'/api/admin/surveys/{sid}/stats', headers=auth_headers())
+        stats = r.get_json()['stats'][0]['stats']
+        # 2 selections for r1 (A=0, C=2) + 1 for r2 (B=1) = 3 total
+        assert stats['total_votes'] == 3
+
 
 # ===========================================================================
 # EXCEL EXPORT
@@ -362,3 +409,38 @@ class TestExcelExport:
     def test_export_unknown_survey_returns_404(self, client):
         r = client.get('/api/admin/surveys/9999/export', headers=auth_headers())
         assert r.status_code == 404
+
+    def test_export_multi_select_columns(self, client):
+        """Multi-select question must expand to N columns (one per answer option)."""
+        import openpyxl, io
+        # Single-choice Q1 (2 options) + multi-select Q2 (3 options)
+        pid1 = create_poll(client, 'Single Q', ['Yes', 'No'])
+        pid2 = create_poll(client, 'Multi Q', ['A', 'B', 'C'], multi_select=True)
+        sid  = create_survey(client, 'MS Export', [pid1, pid2])
+
+        # One respondent: Q1→Yes, Q2→A+C
+        client.post('/api/vote', json={'poll_id': pid1, 'answer_index': 0, 'session_id': 'u1'})
+        client.post('/api/vote', json={'poll_id': pid2, 'answer_indices': [0, 2], 'session_id': 'u1'})
+
+        r = client.get(f'/api/admin/surveys/{sid}/export', headers=auth_headers())
+        wb = openpyxl.load_workbook(io.BytesIO(r.data))
+        ws = wb.active
+
+        # Layout: col1=№, col2=Дата, col3=Single Q (1 col), col4=A, col5=B, col6=C
+        # Row 1 = title, Row 2 = group headers, Row 3 = sub-option headers (multi_select present), Row 4 = data
+        # Find the data row (first row where col1 is a number)
+        data_row = None
+        for i in range(1, ws.max_row + 1):
+            if isinstance(ws.cell(row=i, column=1).value, int):
+                data_row = i
+                break
+        assert data_row is not None
+
+        # col3 = Single Q → 'Yes'
+        assert ws.cell(row=data_row, column=3).value == 'Yes'
+        # col4 = A → '✓' (selected)
+        assert ws.cell(row=data_row, column=4).value == '✓'
+        # col5 = B → '' (not selected)
+        assert (ws.cell(row=data_row, column=5).value or '') == ''
+        # col6 = C → '✓' (selected)
+        assert ws.cell(row=data_row, column=6).value == '✓'

@@ -27,9 +27,16 @@ class Database:
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 question TEXT NOT NULL,
                 answers TEXT NOT NULL,
+                multi_select INTEGER NOT NULL DEFAULT 0,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         ''')
+
+        # Migration: add multi_select if column is missing (existing DBs)
+        try:
+            cursor.execute('ALTER TABLE polls ADD COLUMN multi_select INTEGER NOT NULL DEFAULT 0')
+        except Exception:
+            pass
 
         # Surveys table (named collections of polls)
         cursor.execute('''
@@ -99,14 +106,14 @@ class Database:
 
     # ------------------------------------------------------------------ polls
 
-    def create_poll(self, question, answers):
+    def create_poll(self, question, answers, multi_select=False):
         """Create a new standalone poll (question with answers)"""
         conn = self.get_connection()
         cursor = conn.cursor()
         answers_json = json.dumps(answers, ensure_ascii=False)
         cursor.execute(
-            'INSERT INTO polls (question, answers) VALUES (?, ?)',
-            (question, answers_json)
+            'INSERT INTO polls (question, answers, multi_select) VALUES (?, ?, ?)',
+            (question, answers_json, 1 if multi_select else 0)
         )
         poll_id = cursor.lastrowid
         conn.commit()
@@ -126,6 +133,7 @@ class Database:
             'id': row['id'],
             'question': row['question'],
             'answers': json.loads(row['answers']),
+            'multi_select': bool(row['multi_select']),
             'created_at': row['created_at']
         }
 
@@ -141,19 +149,26 @@ class Database:
                 'id': r['id'],
                 'question': r['question'],
                 'answers': json.loads(r['answers']),
+                'multi_select': bool(r['multi_select']),
                 'created_at': r['created_at']
             }
             for r in rows
         ]
 
-    def update_poll(self, poll_id, question, answers):
-        """Update question text and answers"""
+    def update_poll(self, poll_id, question, answers, multi_select=None):
+        """Update question text and answers; optionally update multi_select flag"""
         conn = self.get_connection()
         cursor = conn.cursor()
-        cursor.execute(
-            'UPDATE polls SET question = ?, answers = ? WHERE id = ?',
-            (question, json.dumps(answers, ensure_ascii=False), poll_id)
-        )
+        if multi_select is None:
+            cursor.execute(
+                'UPDATE polls SET question = ?, answers = ? WHERE id = ?',
+                (question, json.dumps(answers, ensure_ascii=False), poll_id)
+            )
+        else:
+            cursor.execute(
+                'UPDATE polls SET question = ?, answers = ?, multi_select = ? WHERE id = ?',
+                (question, json.dumps(answers, ensure_ascii=False), 1 if multi_select else 0, poll_id)
+            )
         conn.commit()
         conn.close()
 
@@ -211,7 +226,7 @@ class Database:
             return None
         survey = {'id': row['id'], 'title': row['title'], 'show_title': bool(row['show_title']), 'created_at': row['created_at']}
         cursor.execute('''
-            SELECT p.id, p.question, p.answers, p.created_at, sq.position
+            SELECT p.id, p.question, p.answers, p.multi_select, p.created_at, sq.position
             FROM survey_questions sq
             JOIN polls p ON p.id = sq.poll_id
             WHERE sq.survey_id = ?
@@ -222,6 +237,7 @@ class Database:
                 'id': r['id'],
                 'question': r['question'],
                 'answers': json.loads(r['answers']),
+                'multi_select': bool(r['multi_select']),
                 'created_at': r['created_at'],
                 'position': r['position']
             }
@@ -303,14 +319,21 @@ class Database:
 
     # ------------------------------------------------------------------ votes
 
-    def save_vote(self, poll_id, answer_index, ip_address=None, session_id=None):
-        """Save a vote"""
+    def save_vote(self, poll_id, answer_indices, ip_address=None, session_id=None):
+        """
+        Save a vote (one or more answer indices for multi_select questions).
+        answer_indices: int OR list[int]
+        Each answer_index is stored as a separate row in votes.
+        """
+        if isinstance(answer_indices, int):
+            answer_indices = [answer_indices]
         conn = self.get_connection()
         cursor = conn.cursor()
-        cursor.execute(
-            'INSERT INTO votes (poll_id, answer_index, ip_address, session_id) VALUES (?, ?, ?, ?)',
-            (poll_id, answer_index, ip_address, session_id)
-        )
+        for idx in answer_indices:
+            cursor.execute(
+                'INSERT INTO votes (poll_id, answer_index, ip_address, session_id) VALUES (?, ?, ?, ?)',
+                (poll_id, idx, ip_address, session_id)
+            )
         conn.commit()
         conn.close()
 
@@ -418,11 +441,17 @@ class Database:
 
             if key not in sessions:
                 sessions[key] = {'session_id': key, 'voted_at': r['voted_at'], 'answers': {}}
-            sessions[key]['answers'][r['poll_id']] = {
-                'answer_index': r['answer_index'],
-                'answer_text': poll_map[r['poll_id']]['answers'][r['answer_index']]
-                    if r['answer_index'] < len(poll_map[r['poll_id']]['answers']) else '?'
-            }
+            pid = r['poll_id']
+            idx = r['answer_index']
+            poll_obj = poll_map[pid]
+            answer_text = poll_obj['answers'][idx] if idx < len(poll_obj['answers']) else '?'
+            if pid not in sessions[key]['answers']:
+                sessions[key]['answers'][pid] = {
+                    'answer_indices': [],
+                    'answer_texts': []
+                }
+            sessions[key]['answers'][pid]['answer_indices'].append(idx)
+            sessions[key]['answers'][pid]['answer_texts'].append(answer_text)
 
         return {'polls': polls, 'rows': list(sessions.values())}
 

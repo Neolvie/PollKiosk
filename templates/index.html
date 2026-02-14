@@ -181,13 +181,44 @@
             background: linear-gradient(135deg, var(--primary-dark) 0%, var(--secondary) 100%);
             transform: scale(1.05);
             box-shadow: 0 16px 50px var(--shadow);
-            pointer-events: none;
         }
+        /* single-choice selected: block further clicks */
+        .answer-card.selected.locked { pointer-events: none; }
         .answer-card.selected::before { opacity: 0; }
 
         .answer-card.disabled {
             pointer-events: none;
             opacity: 0.6;
+        }
+
+        /* Multi-select confirm button */
+        .confirm-btn-wrap {
+            display: flex;
+            justify-content: center;
+            margin-top: 2.5rem;
+        }
+
+        .confirm-btn {
+            padding: 1rem 3rem;
+            font-size: clamp(1rem, 2vw, 1.3rem);
+            font-weight: 700;
+            border: none;
+            border-radius: 16px;
+            cursor: pointer;
+            background: linear-gradient(135deg, var(--primary) 0%, var(--secondary) 100%);
+            color: #fff;
+            box-shadow: 0 8px 24px var(--shadow);
+            transition: all 0.2s;
+            font-family: inherit;
+        }
+        .confirm-btn:disabled {
+            opacity: 0.35;
+            cursor: not-allowed;
+            transform: none;
+        }
+        .confirm-btn:not(:disabled):hover {
+            transform: translateY(-3px);
+            box-shadow: 0 12px 32px var(--shadow);
         }
 
         .answer-content {
@@ -317,6 +348,13 @@
 
     <div class="answers-grid" id="answersGrid"></div>
 
+    <!-- Multi-select confirm button (hidden for single-choice) -->
+    <div class="confirm-btn-wrap" id="confirmWrap" style="display:none">
+        <button class="confirm-btn" id="confirmBtn" disabled onclick="confirmMultiSelect()">
+            Подтвердить выбор
+        </button>
+    </div>
+
     <!-- Waiting (no active survey) -->
     <div class="waiting" id="waitingScreen" style="display:none">
         <p class="waiting-title">Опрос скоро начнётся...</p>
@@ -368,12 +406,13 @@ function buildPollList(surveys) {
     for (const survey of surveys) {
         for (const poll of survey.polls) {
             list.push({
-                surveyTitle:    survey.title,
+                surveyTitle:     survey.title,
                 showSurveyTitle: survey.show_title !== false,
                 surveyId:        survey.id,
                 pollId:          poll.id,
                 question:        poll.question,
-                answers:         poll.answers
+                answers:         poll.answers,
+                multiSelect:     poll.multi_select === true
             });
         }
     }
@@ -394,6 +433,7 @@ function showWaiting() {
 function showQuestion(idx) {
     if (idx < 0 || idx >= allPolls.length) { showWaiting(); return; }
 
+    selectedIndices = [];  // reset multi-select state
     const poll = allPolls[idx];
 
     document.getElementById('waitingScreen').style.display = 'none';
@@ -412,27 +452,92 @@ function showQuestion(idx) {
 
     // Answers
     const grid = document.getElementById('answersGrid');
+    const confirmWrap = document.getElementById('confirmWrap');
+    const confirmBtn  = document.getElementById('confirmBtn');
     grid.innerHTML = '';
-    poll.answers.forEach((answer, i) => {
-        const card = document.createElement('div');
-        card.className = 'answer-card';
-        card.dataset.index = i;
-        card.innerHTML = `<div class="answer-content"><span class="answer-label">${answer}</span></div>`;
-        card.addEventListener('click', () => selectAnswer(i));
-        grid.appendChild(card);
-    });
+
+    if (poll.multiSelect) {
+        // Multi-select mode: cards are toggleable, confirm button appears
+        confirmWrap.style.display = 'flex';
+        confirmBtn.disabled = true;
+        poll.answers.forEach((answer, i) => {
+            const card = document.createElement('div');
+            card.className = 'answer-card';
+            card.dataset.index = i;
+            card.innerHTML = `<div class="answer-content"><span class="answer-label">${answer}</span></div>`;
+            card.addEventListener('click', () => toggleMultiAnswer(i));
+            grid.appendChild(card);
+        });
+    } else {
+        // Single-choice mode: click immediately submits
+        confirmWrap.style.display = 'none';
+        poll.answers.forEach((answer, i) => {
+            const card = document.createElement('div');
+            card.className = 'answer-card';
+            card.dataset.index = i;
+            card.innerHTML = `<div class="answer-content"><span class="answer-label">${answer}</span></div>`;
+            card.addEventListener('click', () => selectAnswer(i));
+            grid.appendChild(card);
+        });
+    }
 }
 
 // =====================================================================
 // Voting flow
 // =====================================================================
+let selectedIndices = [];  // for multi-select questions
+
+function toggleMultiAnswer(answerIndex) {
+    if (votingLocked) return;
+    const card = document.querySelector(`[data-index="${answerIndex}"]`);
+    if (!card) return;
+
+    const pos = selectedIndices.indexOf(answerIndex);
+    if (pos === -1) {
+        selectedIndices.push(answerIndex);
+        card.classList.add('selected');
+    } else {
+        selectedIndices.splice(pos, 1);
+        card.classList.remove('selected');
+    }
+    // Enable/disable confirm button based on whether at least 1 is selected
+    document.getElementById('confirmBtn').disabled = selectedIndices.length === 0;
+}
+
+async function confirmMultiSelect() {
+    if (votingLocked || selectedIndices.length === 0) return;
+    votingLocked = true;
+    document.getElementById('confirmBtn').disabled = true;
+    // Visually lock all cards
+    document.querySelectorAll('.answer-card').forEach(c => c.classList.add('disabled'));
+
+    const poll = allPolls[currentPollIndex];
+    try {
+        await fetch('/api/vote', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({
+                poll_id: poll.pollId,
+                answer_indices: [...selectedIndices],
+                session_id: currentSessionId
+            })
+        });
+    } catch (e) {
+        console.error('Vote error', e);
+    }
+
+    sessionAnswered++;
+    selectedIndices = [];
+    setTimeout(advanceSession, 400);
+}
+
 async function selectAnswer(answerIndex) {
     if (votingLocked) return;
     votingLocked = true;
 
     const card = document.querySelector(`[data-index="${answerIndex}"]`);
     if (card) {
-        card.classList.add('selected');
+        card.classList.add('selected', 'locked');
         // Disable other cards
         document.querySelectorAll('.answer-card').forEach(c => {
             if (c !== card) c.classList.add('disabled');
