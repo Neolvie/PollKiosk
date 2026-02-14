@@ -456,7 +456,10 @@
     <div class="modal-box">
         <div class="modal-header">
             <h3 class="modal-title" id="statsModalTitle">Статистика</h3>
-            <button class="btn btn-warning btn-sm" onclick="exportExcel()">⬇ Скачать Excel</button>
+            <div style="display:flex;gap:0.5rem;align-items:center;">
+                <button class="btn btn-warning btn-sm" onclick="exportExcel()">⬇ Скачать Excel</button>
+                <button class="btn btn-danger btn-sm" onclick="resetVotes()">🗑 Сбросить результаты</button>
+            </div>
         </div>
         <div id="statsContent"><div class="no-data">Загрузка...</div></div>
         <div class="modal-footer">
@@ -1035,6 +1038,20 @@ async function showSurveyStats(surveyId) {
 function exportExcel() {
     if (!currentStatsSurveyId) return;
     window.location.href = `/api/admin/surveys/${currentStatsSurveyId}/export`;
+}
+
+async function resetVotes() {
+    if (!currentStatsSurveyId) return;
+    const survey = allSurveys.find(s => s.id === currentStatsSurveyId);
+    const name = survey ? survey.title : `#${currentStatsSurveyId}`;
+    if (!confirm(`Удалить ВСЕ результаты опроса «${name}»?\n\nЭто действие необратимо.`)) return;
+    const r = await fetch(`/api/admin/surveys/${currentStatsSurveyId}/votes`, {method: 'DELETE'});
+    if (r.ok) {
+        // Reload stats to show empty state
+        await showSurveyStats(currentStatsSurveyId);
+    } else {
+        alert('Ошибка при сбросе результатов');
+    }
 }
 
 function closeStatsModal() {
