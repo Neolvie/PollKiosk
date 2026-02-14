@@ -104,7 +104,12 @@ def session_config():
             'title': s['title'],
             'show_title': s.get('show_title', True),
             'polls': [
-                {'id': p['id'], 'question': p['question'], 'answers': p['answers']}
+                {
+                    'id': p['id'],
+                    'question': p['question'],
+                    'answers': p['answers'],
+                    'multi_select': p.get('multi_select', False)
+                }
                 for p in s['polls']
             ]
         })
@@ -115,24 +120,35 @@ def session_config():
 def submit_vote():
     """
     Submit a vote.
-    Body: { "poll_id": <int>, "answer_index": <int> }
+    Single choice:  { "poll_id": <int>, "answer_index": <int>, "session_id": <str> }
+    Multi-select:   { "poll_id": <int>, "answer_indices": [<int>, ...], "session_id": <str> }
     """
     data = request.get_json()
-    if not data or 'poll_id' not in data or 'answer_index' not in data:
+    if not data or 'poll_id' not in data:
         return jsonify({'error': 'Invalid request'}), 400
 
     poll_id = data['poll_id']
-    answer_index = data['answer_index']
     session_id = data.get('session_id') or None
 
     poll = db.get_poll(poll_id)
     if not poll:
         return jsonify({'error': 'Poll not found'}), 404
 
-    if answer_index < 0 or answer_index >= len(poll['answers']):
-        return jsonify({'error': 'Invalid answer index'}), 400
+    # Collect indices from either answer_index or answer_indices
+    if 'answer_indices' in data:
+        indices = data['answer_indices']
+        if not isinstance(indices, list) or len(indices) == 0:
+            return jsonify({'error': 'answer_indices must be a non-empty list'}), 400
+    elif 'answer_index' in data:
+        indices = [data['answer_index']]
+    else:
+        return jsonify({'error': 'answer_index or answer_indices required'}), 400
 
-    db.save_vote(poll_id, answer_index, request.remote_addr, session_id=session_id)
+    for idx in indices:
+        if not isinstance(idx, int) or idx < 0 or idx >= len(poll['answers']):
+            return jsonify({'error': f'Invalid answer index: {idx}'}), 400
+
+    db.save_vote(poll_id, indices, request.remote_addr, session_id=session_id)
     return jsonify({'success': True})
 
 
@@ -165,7 +181,8 @@ def create_poll():
     if not question or len(answers) < 2:
         return jsonify({'error': 'Question and at least 2 answers required'}), 400
 
-    poll_id = db.create_poll(question, answers)
+    multi_select = bool(data.get('multi_select', False))
+    poll_id = db.create_poll(question, answers, multi_select=multi_select)
     return jsonify({'success': True, 'poll_id': poll_id})
 
 
@@ -179,7 +196,10 @@ def update_poll(poll_id):
     answers = [a.strip() for a in data['answers'] if a.strip()]
     if not question or len(answers) < 2:
         return jsonify({'error': 'Question and at least 2 answers required'}), 400
-    db.update_poll(poll_id, question, answers)
+    multi_select = data.get('multi_select')  # None = don't change
+    if multi_select is not None:
+        multi_select = bool(multi_select)
+    db.update_poll(poll_id, question, answers, multi_select=multi_select)
     return jsonify({'success': True})
 
 
@@ -282,66 +302,140 @@ _LEFT_WRAP   = Alignment(horizontal='left', vertical='center', wrap_text=True)
 META_COLS    = 2  # № and Дата
 
 
+def _build_col_map(polls):
+    """
+    Build a column map: for each poll, list of (col_index, header, answer_index_or_None).
+    Single-choice polls occupy 1 column (answer_index_or_None = None → put text).
+    Multi-select polls occupy N columns, one per answer option (answer_index_or_None = i).
+    Returns (col_map, total_data_cols) where col_map is
+      { poll_id: [(ci_offset, header, answer_idx), ...] }
+    and ci_offset is 0-based offset from the first data column.
+    """
+    col_map = {}
+    offset = 0
+    for poll in polls:
+        pid = poll['id']
+        if poll.get('multi_select'):
+            cols = []
+            for i, ans in enumerate(poll['answers']):
+                cols.append((offset, ans, i))
+                offset += 1
+        else:
+            cols = [(offset, poll['question'], None)]
+            offset += 1
+        col_map[pid] = cols
+    return col_map, offset  # offset == total data columns
+
+
 def _write_survey_block(ws, survey_title, polls, rows, start_row):
     """
-    Write one survey block (title row + header row + data rows) into worksheet
+    Write one survey block (title row + header rows + data rows) into worksheet
     starting at start_row.  Returns the next free row number after the block.
-    Columns layout: [№] [Дата] [Q1] [Q2] ... [Qn]
+
+    Column layout for each question:
+      Single-choice  → 1 column: text of chosen answer
+      Multi-select   → N columns (one per answer option): '✓' or ''
     """
-    total_q = len(polls)
+    col_map, total_data_cols = _build_col_map(polls)
+    total_cols = META_COLS + total_data_cols
     r = start_row
 
-    # ── Title row ───────────────────────────────────────────────────────────
+    # ── Row 1: survey title ─────────────────────────────────────────────────
     c = ws.cell(row=r, column=1, value=f'Опрос: {survey_title}')
     c.font = Font(bold=True, size=13, color='FFFFFF')
     c.fill = _FILL_SURVEY
     c.alignment = _CENTER
-    if total_q > 0:
-        ws.merge_cells(start_row=r, start_column=1, end_row=r, end_column=META_COLS + total_q)
+    if total_cols > 1:
+        ws.merge_cells(start_row=r, start_column=1, end_row=r, end_column=total_cols)
     r += 1
 
-    # ── Header row ──────────────────────────────────────────────────────────
+    # ── Row 2: question-group header (merge cells for multi_select) ──────────
+    # For single-choice: one cell with question text.
+    # For multi-select: merge N cells, write question text as group header.
     for ci, label in enumerate(['№', 'Дата'], start=1):
         hc = ws.cell(row=r, column=ci, value=label)
         hc.font = _WHITE_BOLD
         hc.fill = _FILL_META
         hc.alignment = _CENTER
 
-    for qi, poll in enumerate(polls):
-        ci = META_COLS + qi + 1
-        hc = ws.cell(row=r, column=ci, value=poll['question'])
+    for poll in polls:
+        pid = poll['id']
+        cols = col_map[pid]
+        first_ci = META_COLS + cols[0][0] + 1
+        last_ci  = META_COLS + cols[-1][0] + 1
+        hc = ws.cell(row=r, column=first_ci, value=poll['question'])
         hc.font = _BOLD
         hc.fill = _FILL_Q
-        hc.alignment = _LEFT_WRAP
+        hc.alignment = _CENTER if len(cols) > 1 else _LEFT_WRAP
+        if len(cols) > 1:
+            ws.merge_cells(start_row=r, start_column=first_ci, end_row=r, end_column=last_ci)
 
     ws.row_dimensions[r].height = 40
     r += 1
+
+    # ── Row 3 (only for multi_select polls): sub-column answer-option headers ─
+    has_multi = any(poll.get('multi_select') for poll in polls)
+    if has_multi:
+        # meta cells — empty but styled same as header
+        for ci in range(1, META_COLS + 1):
+            hc = ws.cell(row=r, column=ci, value='')
+            hc.fill = _FILL_META
+
+        for poll in polls:
+            pid = poll['id']
+            for (off, header, ans_idx) in col_map[pid]:
+                ci = META_COLS + off + 1
+                hc = ws.cell(row=r, column=ci, value=header)
+                hc.font = _BOLD
+                if ans_idx is None:
+                    # single-choice sub-header: repeat question (already merged above)
+                    hc.fill = _FILL_Q
+                    hc.alignment = _LEFT_WRAP
+                else:
+                    # multi-select sub-option header
+                    hc.fill = PatternFill(start_color='BDD7EE', end_color='BDD7EE', fill_type='solid')
+                    hc.alignment = _LEFT_WRAP
+        ws.row_dimensions[r].height = 35
+        r += 1
 
     # ── Data rows ────────────────────────────────────────────────────────────
     for ri, resp in enumerate(rows, start=1):
         ws.cell(row=r, column=1, value=ri).alignment = _CENTER
         ws.cell(row=r, column=2, value=resp['voted_at']).alignment = _CENTER
-        for qi, poll in enumerate(polls):
-            ci = META_COLS + qi + 1
-            ans = resp['answers'].get(poll['id'])
-            ws.cell(row=r, column=ci,
-                    value=ans['answer_text'] if ans else '').alignment = _LEFT_WRAP
+        for poll in polls:
+            pid = poll['id']
+            ans = resp['answers'].get(pid)
+            for (off, header, ans_idx) in col_map[pid]:
+                ci = META_COLS + off + 1
+                if ans is None:
+                    ws.cell(row=r, column=ci, value='').alignment = _LEFT_WRAP
+                elif ans_idx is None:
+                    # single-choice: put text of chosen answer
+                    text = ans['answer_texts'][0] if ans['answer_texts'] else ''
+                    ws.cell(row=r, column=ci, value=text).alignment = _LEFT_WRAP
+                else:
+                    # multi-select: '✓' if this option was chosen
+                    chosen = ans_idx in ans['answer_indices']
+                    ws.cell(row=r, column=ci, value='✓' if chosen else '').alignment = _CENTER
         r += 1
 
     # ── Column widths (only set when wider than current) ────────────────────
+    from openpyxl.utils import get_column_letter
     col_a = ws.column_dimensions['A']
     if col_a.width < 5:
         col_a.width = 5
     col_b = ws.column_dimensions['B']
     if col_b.width < 18:
         col_b.width = 18
-    for qi, poll in enumerate(polls):
-        letter = ws.cell(row=start_row + 1, column=META_COLS + qi + 1).column_letter
-        desired = min(max(len(poll['question']),
-                          max((len(a) for a in poll['answers']), default=0)) + 2, 40)
-        cur = ws.column_dimensions[letter].width or 0
-        if desired > cur:
-            ws.column_dimensions[letter].width = desired
+    for poll in polls:
+        pid = poll['id']
+        for (off, header, ans_idx) in col_map[pid]:
+            ci = META_COLS + off + 1
+            letter = get_column_letter(ci)
+            desired = min(len(header) + 4, 40)
+            cur = ws.column_dimensions[letter].width or 0
+            if desired > cur:
+                ws.column_dimensions[letter].width = desired
 
     return r  # next free row
 

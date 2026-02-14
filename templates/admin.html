@@ -595,6 +595,10 @@ function buildSurveyBody(s) {
             </div>
             <button type="button" class="btn btn-secondary btn-sm" onclick="addAnswerRow('addq-answers-${s.id}')" style="margin-top:0.4rem">+ Вариант</button>
         </div>
+        <div class="toggle-row">
+            <input type="checkbox" id="addq-ms-${s.id}">
+            <label for="addq-ms-${s.id}">Мультивыбор (можно выбрать несколько вариантов)</label>
+        </div>
         <div class="edit-form-footer">
             <button class="btn btn-success btn-sm" onclick="saveNewQuestion(${s.id})">Сохранить вопрос</button>
             <button class="btn btn-secondary btn-sm" onclick="hideAddQuestionForm(${s.id})">Отмена</button>
@@ -618,13 +622,14 @@ function buildQuestionItem(surveyId, p, idx) {
     const answersInputs = p.answers.map((a, i) =>
         `<div class="answer-row"><input type="text" class="form-input" value="${escHtml(a)}" placeholder="Вариант ${i+1}"><button type="button" class="btn-ghost danger" onclick="removeAnswerRow(this, 'eq-answers-${surveyId}-${p.id}')">✕</button></div>`
     ).join('');
+    const msNote = p.multi_select ? ' <span style="color:var(--warning);font-size:0.75rem" title="Мультивыбор">☑ мультивыбор</span>' : '';
 
     return `
     <div class="question-item" id="qitem-${surveyId}-${p.id}">
         <div class="question-collapsed">
             <div class="question-num">${idx + 1}</div>
             <div style="flex:1;min-width:0">
-                <div class="question-text">${escHtml(p.question)}</div>
+                <div class="question-text">${escHtml(p.question)}${msNote}</div>
                 <div class="question-answers-preview">${escHtml(answersPreview)}</div>
             </div>
             <div class="question-actions">
@@ -641,6 +646,10 @@ function buildQuestionItem(surveyId, p, idx) {
                 <label class="form-label">Варианты ответов</label>
                 <div class="answers-input" id="eq-answers-${surveyId}-${p.id}">${answersInputs}</div>
                 <button type="button" class="btn btn-secondary btn-sm" onclick="addAnswerRow('eq-answers-${surveyId}-${p.id}')" style="margin-top:0.4rem">+ Вариант</button>
+            </div>
+            <div class="toggle-row">
+                <input type="checkbox" id="eq-ms-${surveyId}-${p.id}" ${p.multi_select ? 'checked' : ''}>
+                <label for="eq-ms-${surveyId}-${p.id}">Мультивыбор (можно выбрать несколько вариантов)</label>
             </div>
             <div class="edit-form-footer">
                 <button class="btn btn-success btn-sm" onclick="saveEditQuestion(${surveyId}, ${p.id})">Сохранить</button>
@@ -778,23 +787,24 @@ function toggleEditQuestion(surveyId, pollId) {
 }
 
 async function saveEditQuestion(surveyId, pollId) {
-    const question = document.getElementById(`eq-text-${surveyId}-${pollId}`).value.trim();
-    const answers  = Array.from(document.querySelectorAll(`#eq-answers-${surveyId}-${pollId} input`))
-                         .map(i => i.value.trim()).filter(Boolean);
+    const question    = document.getElementById(`eq-text-${surveyId}-${pollId}`).value.trim();
+    const answers     = Array.from(document.querySelectorAll(`#eq-answers-${surveyId}-${pollId} input`))
+                            .map(i => i.value.trim()).filter(Boolean);
+    const multiSelect = document.getElementById(`eq-ms-${surveyId}-${pollId}`).checked;
     if (!question) { alert('Введите текст вопроса'); return; }
     if (answers.length < 2) { alert('Минимум 2 варианта ответа'); return; }
 
     await fetch(`/api/admin/polls/${pollId}`, {
         method: 'PUT',
         headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({question, answers})
+        body: JSON.stringify({question, answers, multi_select: multiSelect})
     });
 
     // Update local survey data and re-render question list
     const survey = allSurveys.find(s => s.id === surveyId);
     if (survey && survey.polls) {
         const poll = survey.polls.find(p => p.id === pollId);
-        if (poll) { poll.question = question; poll.answers = answers; }
+        if (poll) { poll.question = question; poll.answers = answers; poll.multi_select = multiSelect; }
         document.getElementById(`qlist-${surveyId}`).innerHTML = buildQuestionItems(survey);
         survey.poll_count = survey.polls.length;
         updateSurveyMeta(surveyId, survey);
@@ -829,6 +839,7 @@ function showAddQuestionForm(surveyId) {
     const form = document.getElementById(`addq-${surveyId}`);
     form.classList.add('visible');
     document.getElementById(`addq-text-${surveyId}`).value = '';
+    document.getElementById(`addq-ms-${surveyId}`).checked = false;
     const cont = document.getElementById(`addq-answers-${surveyId}`);
     cont.innerHTML = `
         <div class="answer-row"><input type="text" class="form-input" placeholder="Вариант 1"><button type="button" class="btn-ghost danger" onclick="removeAnswerRow(this, 'addq-answers-${surveyId}')">✕</button></div>
@@ -842,16 +853,17 @@ function hideAddQuestionForm(surveyId) {
 }
 
 async function saveNewQuestion(surveyId) {
-    const question = document.getElementById(`addq-text-${surveyId}`).value.trim();
-    const answers  = Array.from(document.querySelectorAll(`#addq-answers-${surveyId} input`))
-                         .map(i => i.value.trim()).filter(Boolean);
+    const question    = document.getElementById(`addq-text-${surveyId}`).value.trim();
+    const answers     = Array.from(document.querySelectorAll(`#addq-answers-${surveyId} input`))
+                            .map(i => i.value.trim()).filter(Boolean);
+    const multiSelect = document.getElementById(`addq-ms-${surveyId}`).checked;
     if (!question) { alert('Введите текст вопроса'); return; }
     if (answers.length < 2) { alert('Минимум 2 варианта ответа'); return; }
 
     const r = await fetch('/api/admin/polls', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({question, answers})
+        body: JSON.stringify({question, answers, multi_select: multiSelect})
     });
     const d = await r.json();
     const newPollId = d.poll_id;
@@ -870,7 +882,7 @@ async function saveNewQuestion(surveyId) {
         body: JSON.stringify({title, poll_ids: newPollIds, show_title: showTitle})
     });
 
-    survey.polls.push({id: newPollId, question, answers});
+    survey.polls.push({id: newPollId, question, answers, multi_select: multiSelect});
     survey.poll_count = survey.polls.length;
     document.getElementById(`qlist-${surveyId}`).innerHTML = buildQuestionItems(survey);
     hideAddQuestionForm(surveyId);
