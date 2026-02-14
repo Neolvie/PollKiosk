@@ -410,6 +410,64 @@ class TestExcelExport:
         r = client.get('/api/admin/surveys/9999/export', headers=auth_headers())
         assert r.status_code == 404
 
+
+# ===========================================================================
+# RESET VOTES
+# ===========================================================================
+
+class TestResetVotes:
+
+    def test_reset_clears_all_votes(self, client):
+        pid1 = create_poll(client, 'Q1', ['A', 'B'])
+        pid2 = create_poll(client, 'Q2', ['X', 'Y'])
+        sid  = create_survey(client, 'Reset Survey', [pid1, pid2])
+
+        # Cast several votes
+        client.post('/api/vote', json={'poll_id': pid1, 'answer_index': 0, 'session_id': 's1'})
+        client.post('/api/vote', json={'poll_id': pid1, 'answer_index': 1, 'session_id': 's2'})
+        client.post('/api/vote', json={'poll_id': pid2, 'answer_index': 0, 'session_id': 's1'})
+
+        # Confirm votes exist
+        r = client.get(f'/api/admin/surveys/{sid}/stats', headers=auth_headers())
+        total = sum(item['stats']['total_votes'] for item in r.get_json()['stats'])
+        assert total == 3
+
+        # Reset
+        r = client.delete(f'/api/admin/surveys/{sid}/votes', headers=auth_headers())
+        assert r.status_code == 200
+        assert r.get_json()['success'] is True
+
+        # Confirm votes are gone
+        r2 = client.get(f'/api/admin/surveys/{sid}/stats', headers=auth_headers())
+        total2 = sum(item['stats']['total_votes'] for item in r2.get_json()['stats'])
+        assert total2 == 0
+
+    def test_reset_unknown_survey_returns_404(self, client):
+        r = client.delete('/api/admin/surveys/9999/votes', headers=auth_headers())
+        assert r.status_code == 404
+
+    def test_reset_requires_auth(self, client):
+        pid = create_poll(client)
+        sid = create_survey(client, 'S', [pid])
+        r = client.delete(f'/api/admin/surveys/{sid}/votes')
+        assert r.status_code == 401
+
+    def test_reset_does_not_affect_other_surveys(self, client):
+        """Resetting survey A must not remove votes from survey B."""
+        pid_a = create_poll(client, 'QA', ['A', 'B'])
+        pid_b = create_poll(client, 'QB', ['X', 'Y'])
+        sid_a = create_survey(client, 'Survey A', [pid_a])
+        sid_b = create_survey(client, 'Survey B', [pid_b])
+
+        client.post('/api/vote', json={'poll_id': pid_a, 'answer_index': 0})
+        client.post('/api/vote', json={'poll_id': pid_b, 'answer_index': 1})
+
+        # Reset only survey A
+        client.delete(f'/api/admin/surveys/{sid_a}/votes', headers=auth_headers())
+
+        r = client.get(f'/api/admin/surveys/{sid_b}/stats', headers=auth_headers())
+        assert r.get_json()['stats'][0]['stats']['total_votes'] == 1
+
     def test_export_multi_select_columns(self, client):
         """Multi-select question must expand to N columns (one per answer option)."""
         import openpyxl, io

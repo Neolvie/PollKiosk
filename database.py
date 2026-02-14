@@ -455,6 +455,22 @@ class Database:
 
         return {'polls': polls, 'rows': list(sessions.values())}
 
+    def reset_survey_votes(self, survey_id):
+        """Delete all votes for all polls belonging to a survey."""
+        survey = self.get_survey(survey_id)
+        if not survey:
+            return False
+        poll_ids = [p['id'] for p in survey['polls']]
+        if not poll_ids:
+            return True
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        placeholders = ','.join('?' * len(poll_ids))
+        cursor.execute(f'DELETE FROM votes WHERE poll_id IN ({placeholders})', poll_ids)
+        conn.commit()
+        conn.close()
+        return True
+
     def get_survey_stats(self, survey_id):
         """Get aggregated stats for all polls in a survey"""
         survey = self.get_survey(survey_id)

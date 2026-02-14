@@ -271,6 +271,16 @@ def delete_survey(survey_id):
     return jsonify({'success': True})
 
 
+@app.route('/api/admin/surveys/<int:survey_id>/votes', methods=['DELETE'])
+@requires_auth
+def reset_survey_votes(survey_id):
+    """Delete all votes for all polls in a survey (for clearing test data)."""
+    ok = db.reset_survey_votes(survey_id)
+    if not ok:
+        return jsonify({'error': 'Survey not found'}), 404
+    return jsonify({'success': True})
+
+
 @app.route('/api/admin/surveys/<int:survey_id>', methods=['GET'])
 @requires_auth
 def get_survey(survey_id):
